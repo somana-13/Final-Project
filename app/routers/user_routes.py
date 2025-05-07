@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import get_current_user, get_db, get_email_service, require_role
 from app.schemas.pagination_schema import EnhancedPagination
 from app.schemas.token_schema import TokenResponse
-from app.schemas.user_schemas import LoginRequest, UserBase, UserCreate, UserListResponse, UserResponse, UserUpdate
+from app.schemas.user_schemas import LoginRequest, UserBase, UserCreate, UserListResponse, UserResponse, UserUpdate, ProfessionalStatusUpdate
 from app.services.user_service import UserService
 from app.services.jwt_service import create_access_token
 from app.utils.link_generation import create_user_links, generate_pagination_links
@@ -122,6 +122,44 @@ async def delete_user(user_id: UUID, db: AsyncSession = Depends(get_db), token: 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.patch("/users/{user_id}/professional-status", response_model=UserResponse, name="update_professional_status", tags=["User Management Requires (Admin or Manager Roles)"])
+async def update_professional_status(user_id: UUID, status_update: ProfessionalStatusUpdate, request: Request, 
+                                 db: AsyncSession = Depends(get_db), token: str = Depends(oauth2_scheme),
+                                 current_user: dict = Depends(require_role(["ADMIN", "MANAGER"])),
+                                 email_service: EmailService = Depends(get_email_service)):
+    """
+    Update a user's professional status.
+    
+    This endpoint allows administrators and managers to upgrade or downgrade a user's professional status.
+    When a user is upgraded to professional status, they receive an email notification.
+    
+    - **user_id**: UUID of the user to update.
+    - **status_update**: Contains the new professional status flag.
+    """
+    user = await UserService.update_professional_status(db, user_id, status_update.is_professional)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    # Send notification email for professional status upgrade
+    if status_update.is_professional:
+        await email_service.send_professional_status_upgrade_email(user)
+    
+    return UserResponse.model_construct(
+        id=user.id,
+        nickname=user.nickname,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        bio=user.bio,
+        profile_picture_url=user.profile_picture_url,
+        github_profile_url=user.github_profile_url,
+        linkedin_profile_url=user.linkedin_profile_url,
+        role=user.role,
+        email=user.email,
+        is_professional=user.is_professional,
+        links=create_user_links(user.id, request)
+    )
+
+
 
 @router.post("/users/", response_model=UserResponse, status_code=status.HTTP_201_CREATED, tags=["User Management Requires (Admin or Manager Roles)"], name="create_user")
 async def create_user(user: UserCreate, request: Request, db: AsyncSession = Depends(get_db), email_service: EmailService = Depends(get_email_service), token: str = Depends(oauth2_scheme), current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))):
@@ -198,6 +236,64 @@ async def register(user_data: UserCreate, session: AsyncSession = Depends(get_db
     if user:
         return user
     raise HTTPException(status_code=400, detail="Email already exists")
+
+@router.put("/profile", response_model=UserResponse, name="update_my_profile", tags=["Profile Management"])
+async def update_my_profile(profile_update: UserUpdate, request: Request, db: AsyncSession = Depends(get_db), 
+                        token: str = Depends(oauth2_scheme), current_user: dict = Depends(get_current_user)):
+    """
+    Update the current user's profile information.
+    
+    This endpoint allows authenticated users to update their own profile information,
+    including fields like first name, last name, bio, and profile URLs.
+    
+    - **profile_update**: The fields to update in the user's profile.
+    """
+    # Get current user's ID from the token
+    user_id = current_user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
+    
+    # Extract only allowed fields for self-update
+    allowed_fields = ["first_name", "last_name", "bio", "profile_picture_url", 
+                      "linkedin_profile_url", "github_profile_url"]
+    
+    update_data = {}
+    for field in allowed_fields:
+        if hasattr(profile_update, field) and getattr(profile_update, field) is not None:
+            value = getattr(profile_update, field)
+            
+            # Apply additional validation for URL fields
+            if field.endswith("_url") and value:
+                if not value.startswith("http://") and not value.startswith("https://"):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, 
+                        detail=f"{field} must start with http:// or https://"
+                    )
+            
+            # Add field to update data
+            update_data[field] = value
+    
+    if not update_data:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid fields to update")
+    
+    updated_user = await UserService.update(db, UUID(user_id), update_data)
+    if not updated_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    
+    return UserResponse.model_construct(
+        id=updated_user.id,
+        nickname=updated_user.nickname,
+        first_name=updated_user.first_name,
+        last_name=updated_user.last_name,
+        bio=updated_user.bio,
+        profile_picture_url=updated_user.profile_picture_url,
+        github_profile_url=updated_user.github_profile_url,
+        linkedin_profile_url=updated_user.linkedin_profile_url,
+        role=updated_user.role,
+        email=updated_user.email,
+        is_professional=updated_user.is_professional,
+        links=create_user_links(updated_user.id, request)
+    )
 
 @router.post("/login/", response_model=TokenResponse, tags=["Login and Registration"])
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), session: AsyncSession = Depends(get_db)):
