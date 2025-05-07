@@ -12,6 +12,7 @@ Welcome to the User Management System project - an epic open-source adventure cr
 - [Project Setup Instructions](setup.md) ⚒️
 - [Features to Select From](features.md) 🛠️
 - [About the Project](about.md)🔥🌟
+- [Profile Management Feature - New!](profile_management_feature.md) 👤✨
 
 ## Goals and Objectives: Unlock Your Coding Superpowers 🎯🏆🌟
 
