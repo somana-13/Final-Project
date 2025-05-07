@@ -38,8 +38,21 @@ class TemplateManager:
         footer = self._read_template('footer.md')
 
         # Read main template and format it with provided context
-        main_template = self._read_template(f'{template_name}.md')
-        main_content = main_template.format(**context)
+        try:
+            main_template = self._read_template(f'{template_name}.md')
+            # Replace Jinja-style variables with format-style
+            template_content = main_template.replace("{{ ", "{")
+            template_content = template_content.replace(" }}", "}")
+            # Add header and footer to context
+            context['header'] = header
+            context['footer'] = footer
+            # Format the template with the context
+            main_content = template_content.format(**context)
+        except KeyError as e:
+            # Handle missing context variables
+            raise ValueError(f"Missing required context variable: {str(e)}")
+        except FileNotFoundError:
+            raise ValueError(f"Email template '{template_name}' not found")
 
         full_markdown = f"{header}\n{main_content}\n{footer}"
         html_content = markdown2.markdown(full_markdown)
