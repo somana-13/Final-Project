@@ -83,13 +83,31 @@ class UserService:
     @classmethod
     async def update(cls, session: AsyncSession, user_id: UUID, update_data: Dict[str, str]) -> Optional[User]:
         try:
-            # validated_data = UserUpdate(**update_data).dict(exclude_unset=True)
-            validated_data = UserUpdate(**update_data).model_dump(exclude_unset=True)
+            # First check if user exists before attempting update
+            existing_user = await cls.get_by_id(session, user_id)
+            if not existing_user:
+                logger.error(f"User {user_id} not found for update.")
+                return None
+                
+            # Validate the update data
+            try:
+                validated_data = UserUpdate(**update_data).model_dump(exclude_unset=True)
+            except ValidationError as ve:
+                logger.error(f"Validation error during user update: {ve}")
+                return None
 
+            # Handle password updates securely
             if 'password' in validated_data:
                 validated_data['hashed_password'] = hash_password(validated_data.pop('password'))
+                
+            # Perform the update
             query = update(User).where(User.id == user_id).values(**validated_data).execution_options(synchronize_session="fetch")
-            await cls._execute_query(session, query)
+            result = await cls._execute_query(session, query)
+            if not result:
+                logger.error(f"Database error during update for user {user_id}")
+                return None
+                
+            # Get the updated user
             updated_user = await cls.get_by_id(session, user_id)
             if updated_user:
                 session.refresh(updated_user)  # Explicitly refresh the updated user object
@@ -97,9 +115,16 @@ class UserService:
                 return updated_user
             else:
                 logger.error(f"User {user_id} not found after update attempt.")
+                return None
+                
+        except ValidationError as e:
+            logger.error(f"Validation error during user update: {e}")
             return None
-        except Exception as e:  # Broad exception handling for debugging
-            logger.error(f"Error during user update: {e}")
+        except SQLAlchemyError as e:
+            logger.error(f"Database error during user update: {e}")
+            return None
+        except Exception as e:  # Catch-all for unexpected errors
+            logger.error(f"Unexpected error during user update: {e}")
             return None
 
     @classmethod
@@ -126,24 +151,60 @@ class UserService:
     @classmethod
     async def login_user(cls, session: AsyncSession, email: str, password: str) -> Optional[User]:
         user = await cls.get_by_email(session, email)
-        if user:
-            if user.email_verified is False:
-                return None
-            if user.is_locked:
-                return None
-            if verify_password(password, user.hashed_password):
+        if not user:
+            # Don't reveal that the email doesn't exist for security
+            logger.warning(f"Login attempt with non-existent email: {email}")
+            return None
+            
+        # Check if email is verified
+        if user.email_verified is False:
+            logger.warning(f"Login attempt with unverified email: {email}")
+            return None
+            
+        # Check if account is locked
+        if user.is_locked:
+            # Calculate time since last failed attempt to possibly unlock
+            current_time = datetime.now(timezone.utc)
+            # If there's no last_login_at, use creation time
+            last_attempt = user.last_login_at or user.created_at
+            
+            # If more than 24 hours have passed, unlock the account automatically
+            if current_time - last_attempt > timedelta(hours=24):
+                user.is_locked = False
                 user.failed_login_attempts = 0
-                user.last_login_at = datetime.now(timezone.utc)
-                session.add(user)
-                await session.commit()
-                return user
+                logger.info(f"Account unlocked after 24-hour timeout: {email}")
             else:
-                user.failed_login_attempts += 1
-                if user.failed_login_attempts >= settings.max_login_attempts:
-                    user.is_locked = True
+                logger.warning(f"Login attempt on locked account: {email}")
+                # Update timestamp to track attempted login on locked account
+                user.last_login_at = current_time
                 session.add(user)
                 await session.commit()
-        return None
+                return None
+            
+        # Verify password
+        if verify_password(password, user.hashed_password):
+            # Successful login - reset failed attempts
+            user.failed_login_attempts = 0
+            user.last_login_at = datetime.now(timezone.utc)
+            session.add(user)
+            await session.commit()
+            logger.info(f"Successful login: {email}")
+            return user
+        else:
+            # Failed login - increment counter
+            user.failed_login_attempts += 1
+            current_time = datetime.now(timezone.utc)
+            user.last_login_at = current_time
+            
+            # Lock account if max attempts reached
+            if user.failed_login_attempts >= settings.max_login_attempts:
+                user.is_locked = True
+                logger.warning(f"Account locked after {settings.max_login_attempts} failed attempts: {email}")
+                
+            session.add(user)
+            await session.commit()
+            logger.warning(f"Failed login attempt {user.failed_login_attempts} for: {email}")
+            return None
 
     @classmethod
     async def is_account_locked(cls, session: AsyncSession, email: str) -> bool:
@@ -199,3 +260,28 @@ class UserService:
             await session.commit()
             return True
         return False
+        
+    @classmethod
+    async def update_professional_status(cls, session: AsyncSession, user_id: UUID, is_professional: bool) -> Optional[User]:
+        """
+        Update a user's professional status.
+        
+        :param session: The AsyncSession instance for database access.
+        :param user_id: The UUID of the user to update.
+        :param is_professional: Boolean indicating whether the user should have professional status.
+        :return: The updated User if successful, None otherwise.
+        """
+        user = await cls.get_by_id(session, user_id)
+        if not user:
+            logger.error(f"User with ID {user_id} not found for professional status update.")
+            return None
+            
+        user.is_professional = is_professional
+        user.professional_status_updated_at = datetime.now(timezone.utc)
+        
+        session.add(user)
+        await session.commit()
+        await session.refresh(user)
+        
+        logger.info(f"Professional status updated for user {user_id} to {is_professional}")
+        return user
