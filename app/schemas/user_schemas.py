@@ -10,11 +10,12 @@ from app.utils.nickname_gen import generate_nickname
 
 
 def validate_url(url: Optional[str]) -> Optional[str]:
-    if url is None:
-        return url
-    url_regex = r'^https?:\/\/[^\s/$.?#].[^\s]*$'
+    if url is None or url.strip() == '':
+        return None
+    # More robust URL regex that handles URLs with or without www
+    url_regex = r'^https?:\/\/(?:www\.)?[\w-]+(\.[\w-]+)+([\w.,@?^=%&:/~+#-]*[\w@?^=%&/~+#-])?$'
     if not re.match(url_regex, url):
-        raise ValueError('Invalid URL format')
+        raise ValueError('Invalid URL format. URLs must start with http:// or https://')
     return url
 
 class UserBase(BaseModel):
@@ -81,3 +82,7 @@ class UserListResponse(BaseModel):
     total: int = Field(..., example=100)
     page: int = Field(..., example=1)
     size: int = Field(..., example=10)
+
+class ProfessionalStatusUpdate(BaseModel):
+    is_professional: bool = Field(..., example=True, description="Flag indicating whether the user should have professional status")
+
