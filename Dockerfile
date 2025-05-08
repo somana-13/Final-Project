@@ -1,5 +1,5 @@
 # Define a base stage with a Debian Bookworm base image that includes the latest glibc update
-FROM python:3.12-bookworm as base
+FROM python:3.12-bookworm AS base
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -27,7 +27,7 @@ RUN python -m venv /.venv \
     && pip install -r requirements.txt
 
 # Define a second stage for the runtime, using the same Debian Bookworm slim image
-FROM python:3.12-slim-bookworm as final
+FROM python:3.12-slim-bookworm AS final
 
 # Upgrade libc-bin in the final stage to ensure security patch is applied
 RUN apt-get update && apt-get install -y libc-bin=2.36-9+deb12u7 \
